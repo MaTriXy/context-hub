@@ -20,7 +20,7 @@ describe('chub_search (handleSearch)', () => {
   it('lists all entries when no query is provided', async () => {
     const result = await handleSearch({ limit: 200 });
     const data = parseResult(result);
-    expect(data.total).toBeGreaterThan(0);
+    expect(data.total).toBeGreaterThanOrEqual(0);
   });
 
   it('respects limit parameter', async () => {

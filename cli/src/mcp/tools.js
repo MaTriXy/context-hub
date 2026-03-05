@@ -77,6 +77,14 @@ export async function handleSearch({ query, tags, lang, limit = 20 }) {
 
 export async function handleGet({ id, lang, version, full = false, file }) {
   try {
+    // Validate file parameter early (before entry lookup) to reject path traversal
+    if (file) {
+      const normalizedFile = resolve('/', file).slice(1);
+      if (normalizedFile !== file || file.includes('..')) {
+        return errorResult(`Invalid file path: "${file}". Path traversal is not allowed.`);
+      }
+    }
+
     const result = getEntry(id);
 
     if (result.ambiguous) {
@@ -119,11 +127,6 @@ export async function handleGet({ id, lang, version, full = false, file }) {
     let content;
 
     if (file) {
-      // Validate against path traversal
-      const normalizedFile = resolve('/', file).slice(1);
-      if (normalizedFile !== file || file.includes('..')) {
-        return errorResult(`Invalid file path: "${file}". Path traversal is not allowed.`);
-      }
       // Fetch a specific file
       if (!resolved.files.includes(file)) {
         const entryFileName = type === 'skill' ? 'SKILL.md' : 'DOC.md';
