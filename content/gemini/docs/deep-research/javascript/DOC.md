@@ -3,8 +3,8 @@ name: deep-research
 description: "Gemini Deep Research API via the Interactions endpoint for autonomous multi-step research with structured reports"
 metadata:
   languages: "javascript"
-  versions: "1.0.0"
-  revision: 1
+  versions: "1.33.0"
+  revision: 2
   updated-on: "2026-03-09"
   source: community
   tags: "gemini,google,deep-research,research,interactions,agent"
@@ -14,8 +14,8 @@ metadata:
 
 The Deep Research API lets you run Google's autonomous research agent
 programmatically. It performs multi-step web research and returns structured
-markdown reports. This uses the **Interactions API** — a separate endpoint from
-the standard `generateContent` API.
+markdown reports. This uses the **Interactions API** — the recommended way to
+interact with Gemini models and agents.
 
 ## Official References
 
@@ -24,211 +24,183 @@ the standard `generateContent` API.
 
 ## Key Concepts
 
-- **Interactions API**: REST endpoint at `https://generativelanguage.googleapis.com/v1beta/interactions`
-- **Asynchronous**: You create an interaction, then poll for completion (typically 5–15 minutes)
+- **Interactions API**: Unified interface for Gemini models and agents, with server-side state management
+- **Asynchronous**: Create a background interaction, then poll for completion (typically 5–15 minutes)
 - **Agent model**: `deep-research-pro-preview-12-2025` (the only available agent as of March 2026)
-- **Authentication**: Uses `x-goog-api-key` header (same `GEMINI_API_KEY`)
+- **SDK**: `@google/genai` >= 1.33.0 wraps the Interactions API natively
 - **Output**: Markdown report with citations and structured sections
-- **Store required**: `store: true` is required when using `background: true`
+
+## Installation
+
+```bash
+npm install @google/genai
+```
 
 ## Authentication
 
-Use the same Gemini API key. Set `GEMINI_API_KEY` environment variable or pass directly.
-
-## Step 1: Create an Interaction
+Set `GEMINI_API_KEY` environment variable — the SDK picks it up automatically.
 
 ```typescript
-const API_KEY = process.env.GEMINI_API_KEY;
-const BASE_URL = "https://generativelanguage.googleapis.com/v1beta/interactions";
-const AGENT = "deep-research-pro-preview-12-2025";
-
-async function createInteraction(query: string): Promise<{ name: string; id: string; status: string }> {
-  const response = await fetch(BASE_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-goog-api-key": API_KEY!,
-    },
-    body: JSON.stringify({
-      input: query,
-      agent: AGENT,
-      background: true,
-      store: true,
-    }),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Create failed: ${response.status} ${await response.text()}`);
-  }
-
-  return response.json();
-}
-
-const interaction = await createInteraction("Research the current state of AI in disaster relief");
-console.log(`Started: ${interaction.name}`);
-// Output: Started: interactions/abc123...
+// Or pass directly
+import { GoogleGenAI } from "@google/genai";
+const client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 ```
 
-### Parameters
+## Quick Start
+
+```typescript
+import { GoogleGenAI } from "@google/genai";
+
+const client = new GoogleGenAI({});
+
+// Start background research
+const initialInteraction = await client.interactions.create({
+  agent: "deep-research-pro-preview-12-2025",
+  input: "Research the current state of AI in disaster relief operations.",
+  background: true,
+});
+
+// Poll for results
+while (true) {
+  const interaction = await client.interactions.get(initialInteraction.id);
+  if (interaction.status === "completed") {
+    console.log(interaction.outputs[interaction.outputs.length - 1].text);
+    break;
+  } else if (["failed", "cancelled"].includes(interaction.status)) {
+    console.log(`Failed: ${interaction.status}`);
+    break;
+  }
+  await new Promise((resolve) => setTimeout(resolve, 10000));
+}
+```
+
+## Complete Example with Error Handling
+
+```typescript
+import { GoogleGenAI } from "@google/genai";
+import fs from "fs/promises";
+
+const client = new GoogleGenAI({});
+
+async function deepResearch(query: string, timeoutMinutes = 60): Promise<string> {
+  // Start background research
+  const initialInteraction = await client.interactions.create({
+    agent: "deep-research-pro-preview-12-2025",
+    input: query,
+    background: true,
+  });
+  console.log(`Research started: ${initialInteraction.id}`);
+
+  // Poll for completion
+  const deadline = Date.now() + timeoutMinutes * 60 * 1000;
+
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 10_000));
+
+    try {
+      const interaction = await client.interactions.get(initialInteraction.id);
+
+      if (interaction.status === "completed") {
+        const outputs = interaction.outputs;
+        if (outputs && outputs.length > 0) {
+          return outputs[outputs.length - 1].text;
+        }
+        return "No content in response";
+      }
+
+      if (["failed", "cancelled"].includes(interaction.status)) {
+        throw new Error(`Research ${interaction.status}`);
+      }
+    } catch (e: any) {
+      // Retry on transient errors, throw on fatal
+      if (e.message?.includes("Research failed") || e.message?.includes("Research cancelled")) {
+        throw e;
+      }
+      console.warn(`Poll error (retrying): ${e.message}`);
+    }
+  }
+
+  throw new Error(`Research timed out after ${timeoutMinutes} minutes`);
+}
+
+// Usage
+const report = await deepResearch("Current state of AI in disaster relief operations");
+await fs.writeFile("report.md", report);
+console.log("Report saved.");
+```
+
+## Optional: Generate a Research Plan First
+
+For higher quality results, generate a structured research plan before
+sending to Deep Research:
+
+```typescript
+const planInteraction = await client.interactions.create({
+  model: "gemini-2.5-pro",
+  input: `Create a detailed research plan for: "${topic}". Break it into key areas and questions.`,
+});
+const plan = planInteraction.outputs[planInteraction.outputs.length - 1].text;
+
+// Pass the refined plan to Deep Research
+const report = await deepResearch(`Execute the following research plan:\n\n${plan}`);
+```
+
+## Stateful Conversations with Deep Research
+
+The Interactions API supports server-side conversation state. You can
+chain interactions using `previousInteractionId`:
+
+```typescript
+// First research task
+const interaction1 = await client.interactions.create({
+  agent: "deep-research-pro-preview-12-2025",
+  input: "Research quantum computing breakthroughs in 2026.",
+  background: true,
+});
+// ... poll until complete ...
+
+// Follow-up referencing previous context
+const interaction2 = await client.interactions.create({
+  agent: "deep-research-pro-preview-12-2025",
+  input: "Now compare these breakthroughs with classical computing limitations.",
+  background: true,
+  previousInteractionId: interaction1.id,
+});
+```
+
+## Parameters
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `input` | string | Yes | The research query or topic |
 | `agent` | string | Yes | Must be `deep-research-pro-preview-12-2025` |
 | `background` | boolean | Yes | Set to `true` for async execution |
-| `store` | boolean | Yes | Must be `true` when `background` is `true` |
+| `previousInteractionId` | string | No | Chain to a previous interaction for context |
 
-## Step 2: Poll for Completion
-
-Research takes 5–15 minutes. Poll every 10 seconds.
-
-```typescript
-interface InteractionResponse {
-  name?: string;
-  id?: string;
-  status?: string; // "in_progress" | "completed" | "failed"
-  error?: any;
-  outputs?: Array<{ text: string }>;
-}
-
-async function pollInteraction(interactionName: string): Promise<string> {
-  // Extract ID from resource name (e.g., "interactions/abc123" -> "abc123")
-  const id = interactionName.includes("/")
-    ? interactionName.split("/").pop()
-    : interactionName;
-
-  const url = `${BASE_URL}/${id}`;
-  const TIMEOUT_MS = 60 * 60 * 1000; // 1 hour max
-  const startTime = Date.now();
-
-  while (true) {
-    if (Date.now() - startTime > TIMEOUT_MS) {
-      throw new Error("Research timed out after 60 minutes");
-    }
-
-    await new Promise((r) => setTimeout(r, 10_000)); // 10s interval
-
-    const response = await fetch(url, {
-      headers: { "x-goog-api-key": API_KEY! },
-    });
-
-    if (!response.ok) {
-      // Retry on 5xx, abort on 4xx (except 429)
-      if (response.status >= 400 && response.status < 500 && response.status !== 429) {
-        throw new Error(`Fatal error: ${response.status}`);
-      }
-      continue; // Retry on transient errors
-    }
-
-    const data: InteractionResponse = await response.json();
-
-    if (data.status === "completed" || data.status === "COMPLETED") {
-      const lastOutput = data.outputs?.[data.outputs.length - 1];
-      return lastOutput?.text ?? "No content in response";
-    }
-
-    if (data.status === "failed" || data.status === "FAILED") {
-      throw new Error(`Research failed: ${JSON.stringify(data.error)}`);
-    }
-
-    // Still in_progress — continue polling
-  }
-}
-
-const report = await pollInteraction(interaction.name);
-```
-
-### Response Shape
-
-```json
-{
-  "name": "interactions/abc123",
-  "id": "abc123",
-  "status": "completed",
-  "outputs": [
-    {
-      "text": "# Research Report\n\n## Executive Summary\n..."
-    }
-  ]
-}
-```
-
-### Status Values
+## Status Values
 
 | Status | Meaning |
 |--------|---------|
 | `in_progress` | Agent is still researching |
-| `completed` | Report is ready in `outputs[].text` |
-| `failed` | Research failed — check `error` field |
-
-## Step 3: Save the Report
-
-```typescript
-import fs from "fs/promises";
-
-const slug = "ai-disaster-relief";
-const filename = `report-${slug}-${Date.now()}.md`;
-await fs.writeFile(filename, report);
-console.log(`Saved: ${filename}`);
-```
-
-## Complete Example
-
-```typescript
-import fs from "fs/promises";
-
-const API_KEY = process.env.GEMINI_API_KEY;
-const BASE_URL = "https://generativelanguage.googleapis.com/v1beta/interactions";
-const AGENT = "deep-research-pro-preview-12-2025";
-
-async function deepResearch(query: string): Promise<string> {
-  // Create
-  const createRes = await fetch(BASE_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-goog-api-key": API_KEY!,
-    },
-    body: JSON.stringify({ input: query, agent: AGENT, background: true, store: true }),
-  });
-
-  if (!createRes.ok) throw new Error(`Create failed: ${createRes.status}`);
-  const { name } = await createRes.json();
-  const id = name.split("/").pop();
-  console.log(`Research started: ${id}`);
-
-  // Poll
-  while (true) {
-    await new Promise((r) => setTimeout(r, 10_000));
-
-    const pollRes = await fetch(`${BASE_URL}/${id}`, {
-      headers: { "x-goog-api-key": API_KEY! },
-    });
-
-    if (!pollRes.ok) continue;
-    const data = await pollRes.json();
-
-    if (data.status === "completed" || data.status === "COMPLETED") {
-      return data.outputs[data.outputs.length - 1].text;
-    }
-    if (data.status === "failed" || data.status === "FAILED") {
-      throw new Error(`Failed: ${JSON.stringify(data.error)}`);
-    }
-  }
-}
-
-// Usage
-const report = await deepResearch("Current state of AI in disaster relief operations");
-await fs.writeFile("report.md", report);
-```
+| `completed` | Report is ready in `outputs[last].text` |
+| `failed` | Research failed — check error |
+| `cancelled` | Research was cancelled |
 
 ## Tips and Gotchas
 
-- **Long-running**: Expect 5–15 minutes per research task. Budget for this in your application.
-- **No streaming**: Unlike `generateContent`, there is no streaming variant. You must poll.
+- **Long-running**: Expect 5–15 minutes per research task. Max research time is 60 minutes.
+- **No streaming**: Deep Research does not support streaming. You must poll via `client.interactions.get()`.
 - **Rate limits**: The Interactions API has separate rate limits from `generateContent`. Expect lower throughput.
 - **Report quality**: The agent performs real web searches. More specific queries produce better reports.
-- **Plan first**: For best results, generate a research plan with `generateContent` (using `gemini-2.5-pro`), then pass the refined plan to Deep Research.
-- **Agent name**: As of March 2026, the only available agent is `deep-research-pro-preview-12-2025`. No 3.x-based agent exists yet.
-- **Background must be true**: The `background: true` parameter is required. Synchronous mode is not supported for this agent.
+- **Plan first**: For best results, generate a research plan with a standard model first, then pass it to Deep Research.
+- **Agent name**: As of March 2026, the only available agent is `deep-research-pro-preview-12-2025`.
+- **Audio inputs not supported**: The Deep Research agent does not accept audio inputs.
 - **Output is markdown**: Reports come back as structured markdown with headers, bullet points, and citations.
+- **Google Search is built-in**: The agent uses Google Search by default. Grounding restrictions apply to results.
+
+## Migration from Raw REST
+
+If you previously used raw REST calls to `https://generativelanguage.googleapis.com/v1beta/interactions`,
+the SDK is now the recommended approach. The `client.interactions.create()` and
+`client.interactions.get()` methods handle authentication, serialization, and
+error handling automatically.

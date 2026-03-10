@@ -3,8 +3,8 @@ name: deep-research
 description: "Gemini Deep Research API via the Interactions endpoint for autonomous multi-step research with structured reports"
 metadata:
   languages: "python"
-  versions: "1.0.0"
-  revision: 1
+  versions: "1.55.0"
+  revision: 2
   updated-on: "2026-03-09"
   source: community
   tags: "gemini,google,deep-research,research,interactions,agent"
@@ -14,8 +14,8 @@ metadata:
 
 The Deep Research API lets you run Google's autonomous research agent
 programmatically. It performs multi-step web research and returns structured
-markdown reports. This uses the **Interactions API** — a separate endpoint from
-the standard `generateContent` API.
+markdown reports. This uses the **Interactions API** — the recommended way to
+interact with Gemini models and agents.
 
 ## Official References
 
@@ -24,193 +24,97 @@ the standard `generateContent` API.
 
 ## Key Concepts
 
-- **Interactions API**: REST endpoint at `https://generativelanguage.googleapis.com/v1beta/interactions`
-- **Asynchronous**: You create an interaction, then poll for completion (typically 5–15 minutes)
+- **Interactions API**: Unified interface for Gemini models and agents, with server-side state management
+- **Asynchronous**: Create a background interaction, then poll for completion (typically 5–15 minutes)
 - **Agent model**: `deep-research-pro-preview-12-2025` (the only available agent as of March 2026)
-- **Authentication**: Uses `x-goog-api-key` header (same `GEMINI_API_KEY`)
+- **SDK**: `google-genai` >= 1.55.0 wraps the Interactions API natively
 - **Output**: Markdown report with citations and structured sections
-- **Store required**: `store: True` is required when using `background: True`
-- **No SDK wrapper**: As of March 2026, the `google-genai` SDK does not wrap the Interactions API. Use `requests` directly.
+
+## Installation
+
+```bash
+pip install -U google-genai
+```
+
+**Important**: The package is `google-genai`, NOT the deprecated `google-generativeai`.
 
 ## Authentication
 
-Use the same Gemini API key. Set `GEMINI_API_KEY` environment variable or pass directly.
+Set `GEMINI_API_KEY` environment variable — the SDK picks it up automatically.
 
 ```python
 import os
-
-API_KEY = os.environ["GEMINI_API_KEY"]
-BASE_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
-AGENT = "deep-research-pro-preview-12-2025"
-HEADERS = {
-    "Content-Type": "application/json",
-    "x-goog-api-key": API_KEY,
-}
+os.environ["GEMINI_API_KEY"] = "your-api-key"
 ```
 
-## Step 1: Create an Interaction
-
-```python
-import requests
-
-def create_interaction(query: str) -> dict:
-    """Start a Deep Research interaction. Returns the interaction resource."""
-    response = requests.post(
-        BASE_URL,
-        headers=HEADERS,
-        json={
-            "input": query,
-            "agent": AGENT,
-                        "background": True,
-            "store": True,
-        },
-    )
-    response.raise_for_status()
-    return response.json()
-
-interaction = create_interaction("Research the current state of AI in disaster relief")
-print(f"Started: {interaction['name']}")
-# Output: Started: interactions/abc123...
-```
-
-### Parameters
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `input` | string | Yes | The research query or topic |
-| `agent` | string | Yes | Must be `deep-research-pro-preview-12-2025` |
-| `background` | boolean | Yes | Set to `True` for async execution |
-| `store` | boolean | Yes | Must be `True` when `background` is `True` |
-
-## Step 2: Poll for Completion
-
-Research takes 5–15 minutes. Poll every 10 seconds.
+## Quick Start
 
 ```python
 import time
+from google import genai
 
-def poll_interaction(interaction_name: str, timeout_minutes: int = 60) -> str:
-    """Poll until research completes. Returns the markdown report."""
-    # Extract ID from resource name
-    interaction_id = interaction_name.split("/")[-1] if "/" in interaction_name else interaction_name
-    url = f"{BASE_URL}/{interaction_id}"
+client = genai.Client()
 
-    deadline = time.time() + timeout_minutes * 60
+# Start background research
+interaction = client.interactions.create(
+    agent="deep-research-pro-preview-12-2025",
+    input="Research the current state of AI in disaster relief operations.",
+    background=True,
+)
 
-    while time.time() < deadline:
-        time.sleep(10)  # Poll every 10 seconds
-
-        try:
-            response = requests.get(url, headers=HEADERS)
-
-            if response.status_code >= 400 and response.status_code < 500 and response.status_code != 429:
-                raise RuntimeError(f"Fatal API error: {response.status_code} {response.text}")
-
-            if not response.ok:
-                continue  # Retry on transient errors
-
-            data = response.json()
-            status = data.get("status", "").lower()
-
-            if status == "completed":
-                outputs = data.get("outputs", [])
-                if outputs:
-                    return outputs[-1]["text"]
-                return "No content in response"
-
-            if status == "failed":
-                raise RuntimeError(f"Research failed: {data.get('error')}")
-
-        except requests.RequestException:
-            continue  # Retry on network errors
-
-    raise TimeoutError(f"Research timed out after {timeout_minutes} minutes")
-
-report = poll_interaction(interaction["name"])
+# Poll for results
+while True:
+    interaction = client.interactions.get(interaction.id)
+    if interaction.status == "completed":
+        print(interaction.outputs[-1].text)
+        break
+    elif interaction.status == "failed":
+        print(f"Failed: {interaction.error}")
+        break
+    time.sleep(10)
 ```
 
-### Response Shape
-
-```json
-{
-  "name": "interactions/abc123",
-  "id": "abc123",
-  "status": "completed",
-  "outputs": [
-    {
-      "text": "# Research Report\n\n## Executive Summary\n..."
-    }
-  ]
-}
-```
-
-### Status Values
-
-| Status | Meaning |
-|--------|---------|
-| `in_progress` | Agent is still researching |
-| `completed` | Report is ready in `outputs[].text` |
-| `failed` | Research failed — check `error` field |
-
-## Step 3: Save the Report
+## Complete Example with Error Handling
 
 ```python
-from pathlib import Path
-
-slug = "ai-disaster-relief"
-filename = f"report-{slug}-{int(time.time())}.md"
-Path(filename).write_text(report)
-print(f"Saved: {filename}")
-```
-
-## Complete Example
-
-```python
-import os
 import time
-import requests
 from pathlib import Path
+from google import genai
 
-API_KEY = os.environ["GEMINI_API_KEY"]
-BASE_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
-AGENT = "deep-research-pro-preview-12-2025"
-HEADERS = {"Content-Type": "application/json", "x-goog-api-key": API_KEY}
+client = genai.Client()
 
 
 def deep_research(query: str, timeout_minutes: int = 60) -> str:
     """Run Gemini Deep Research and return the markdown report."""
-    # Create interaction
-    resp = requests.post(
-        BASE_URL,
-        headers=HEADERS,
-        json={"input": query, "agent": AGENT, "background": True, "store": True},
+    # Start background research
+    interaction = client.interactions.create(
+        agent="deep-research-pro-preview-12-2025",
+        input=query,
+        background=True,
     )
-    resp.raise_for_status()
-    interaction_id = resp.json()["name"].split("/")[-1]
-    print(f"Research started: {interaction_id}")
+    print(f"Research started: {interaction.id}")
 
     # Poll for completion
-    url = f"{BASE_URL}/{interaction_id}"
     deadline = time.time() + timeout_minutes * 60
 
     while time.time() < deadline:
         time.sleep(10)
 
         try:
-            r = requests.get(url, headers=HEADERS)
-            if not r.ok:
-                continue
-            data = r.json()
-            status = data.get("status", "").lower()
-
-            if status == "completed":
-                return data["outputs"][-1]["text"]
-            if status == "failed":
-                raise RuntimeError(f"Failed: {data.get('error')}")
-        except requests.RequestException:
+            interaction = client.interactions.get(interaction.id)
+        except Exception as e:
+            print(f"Poll error (retrying): {e}")
             continue
 
-    raise TimeoutError("Research timed out")
+        if interaction.status == "completed":
+            if interaction.outputs:
+                return interaction.outputs[-1].text
+            return "No content in response"
+
+        if interaction.status in ("failed", "cancelled"):
+            raise RuntimeError(f"Research {interaction.status}: {interaction.error}")
+
+    raise TimeoutError(f"Research timed out after {timeout_minutes} minutes")
 
 
 # Usage
@@ -227,27 +131,76 @@ sending to Deep Research:
 ```python
 from google import genai
 
-client = genai.Client()  # uses GEMINI_API_KEY env var
+client = genai.Client()
 
-plan = client.models.generate_content(
+# Generate plan using a standard model
+plan_interaction = client.interactions.create(
     model="gemini-2.5-pro",
-    contents=f'Create a detailed research plan for: "{topic}". '
-             "Break it into key areas and questions. Be concise but comprehensive.",
+    input=f'Create a detailed research plan for: "{topic}". '
+          "Break it into key areas and questions. Be concise but comprehensive.",
 )
+plan = plan_interaction.outputs[-1].text
 
 # Pass the refined plan to Deep Research
-report = deep_research(f"Execute the following research plan:\n\n{plan.text}")
+report = deep_research(f"Execute the following research plan:\n\n{plan}")
 ```
+
+## Stateful Conversations with Deep Research
+
+The Interactions API supports server-side conversation state. You can
+chain interactions using `previous_interaction_id`:
+
+```python
+# First research task
+interaction1 = client.interactions.create(
+    agent="deep-research-pro-preview-12-2025",
+    input="Research quantum computing breakthroughs in 2026.",
+    background=True,
+)
+# ... poll until complete ...
+
+# Follow-up referencing previous context
+interaction2 = client.interactions.create(
+    agent="deep-research-pro-preview-12-2025",
+    input="Now compare these breakthroughs with classical computing limitations.",
+    background=True,
+    previous_interaction_id=interaction1.id,
+)
+```
+
+## Parameters
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `input` | string | Yes | The research query or topic |
+| `agent` | string | Yes | Must be `deep-research-pro-preview-12-2025` |
+| `background` | boolean | Yes | Set to `True` for async execution |
+| `previous_interaction_id` | string | No | Chain to a previous interaction for context |
+
+## Status Values
+
+| Status | Meaning |
+|--------|---------|
+| `in_progress` | Agent is still researching |
+| `completed` | Report is ready in `outputs[-1].text` |
+| `failed` | Research failed — check `error` field |
+| `cancelled` | Research was cancelled |
 
 ## Tips and Gotchas
 
-- **Long-running**: Expect 5–15 minutes per research task. Budget for this in your application.
-- **No streaming**: Unlike `generateContent`, there is no streaming variant. You must poll.
-- **No SDK wrapper**: The `google-genai` Python SDK does not have a method for the Interactions API. Use `requests` directly against the REST endpoint.
+- **Long-running**: Expect 5–15 minutes per research task. Max research time is 60 minutes.
+- **No streaming**: Deep Research does not support streaming. You must poll via `client.interactions.get()`.
 - **Rate limits**: The Interactions API has separate rate limits from `generateContent`. Expect lower throughput.
 - **Report quality**: The agent performs real web searches. More specific queries produce better reports.
-- **Plan first**: For best results, generate a research plan with `generateContent` (using `gemini-2.5-pro`), then pass the refined plan to Deep Research.
-- **Agent name**: As of March 2026, the only available agent is `deep-research-pro-preview-12-2025`. No 3.x-based agent exists yet.
-- **Background must be True**: The `background: True` parameter is required. Synchronous mode is not supported for this agent.
+- **Plan first**: For best results, generate a research plan with a standard model first, then pass it to Deep Research.
+- **Agent name**: As of March 2026, the only available agent is `deep-research-pro-preview-12-2025`.
+- **Audio inputs not supported**: The Deep Research agent does not accept audio inputs.
 - **Output is markdown**: Reports come back as structured markdown with headers, bullet points, and citations.
-- **Dependencies**: Only `requests` is needed — no special Google SDK required for this endpoint.
+- **Google Search is built-in**: The agent uses Google Search by default. Grounding restrictions apply to results.
+
+## Migration from Raw REST
+
+If you previously used raw REST calls to `https://generativelanguage.googleapis.com/v1beta/interactions`,
+the SDK is now the recommended approach. The `client.interactions.create()` and
+`client.interactions.get()` methods handle authentication, serialization, and
+error handling automatically.
