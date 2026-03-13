@@ -13,6 +13,7 @@ import { registerFeedbackCommand } from './commands/feedback.js';
 import { registerAnnotateCommand } from './commands/annotate.js';
 import { trackEvent, shutdownAnalytics } from './lib/analytics.js';
 import { error } from './lib/output.js';
+import { showWelcomeIfNeeded } from './lib/welcome.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'));
@@ -129,6 +130,7 @@ registerBuildCommand(program);
 registerFeedbackCommand(program);
 registerAnnotateCommand(program);
 
+showWelcomeIfNeeded();
 program.parse();
 
 // Flush analytics before exit (best-effort)
